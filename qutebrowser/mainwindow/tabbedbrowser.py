@@ -200,6 +200,7 @@ class TabbedBrowser(QWidget):
     resized = pyqtSignal('QRect')
     current_tab_changed = pyqtSignal(browsertab.AbstractTab)
     new_tab = pyqtSignal(browsertab.AbstractTab, int)
+    is_treetabbedbrowser = False
     shutting_down = pyqtSignal()
 
     def __init__(self, *, win_id, private, parent=None):
@@ -436,6 +437,26 @@ class TabbedBrowser(QWidget):
             elif last_close == 'default-page':
                 self.load_url(config.val.url.default_page, newtab=True)
 
+    def _add_undo_entry(self, tab, idx, new_undo):
+        """Add a removed tab to the undo stack.
+
+        Args:
+            tab: The tab about to be closed
+            idx: The current position (index) of the tab
+            new_undo: Whether the entry should be a new item in the stack
+        """
+        try:
+            history_data = tab.history.private_api.serialize()
+        except browsertab.WebTabError:
+            pass  # special URL
+        else:
+            entry = UndoEntry(tab.url(), history_data, idx, tab.data.pinned)
+
+            if new_undo or not self._undo_stack:
+                self._undo_stack.append([entry])
+            else:
+                self._undo_stack[-1].append(entry)
+
     def _remove_tab(self, tab, *, add_undo=True, new_undo=True, crashed=False):
         """Remove a tab from the tab list and delete it properly.
 
@@ -446,6 +467,7 @@ class TabbedBrowser(QWidget):
             crashed: Whether we're closing a tab with crashed renderer process.
         """
         idx = self.widget.indexOf(tab)
+
         if idx == -1:
             if crashed:
                 return
@@ -527,10 +549,20 @@ class TabbedBrowser(QWidget):
                 newtab = self.widget.widget(0)
                 use_current_tab = False
             else:
-                newtab = self.tabopen(background=False, idx=entry.index)
+                # FIXME:typing mypy thinks this is None due to @pyqtSlot
+                newtab = typing.cast(
+                    browsertab.AbstractTab,
+                    self.tabopen(
+                        background=False,
+                        related=False,
+                        idx=entry.index
+                    )
+                )
 
             newtab.history.private_api.deserialize(entry.history)
             self.widget.set_tab_pinned(newtab, entry.pinned)
+            new_tabs.append(newtab)
+        return new_tabs
 
     @pyqtSlot('QUrl', bool)
     def load_url(self, url, newtab):
@@ -619,7 +651,7 @@ class TabbedBrowser(QWidget):
 
         if idx is None:
             idx = self._get_new_tab_idx(related)
-        self.widget.insertTab(idx, tab, "")
+        idx = self.widget.insertTab(idx, tab, "")
 
         if url is not None:
             tab.load_url(url)
